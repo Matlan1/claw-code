@@ -1080,7 +1080,7 @@ fn persisted_block_json(block: &ContentBlock) -> JsonValue {
                 );
             }
         }
-        ContentBlock::ToolUse { id, name, input } => {
+        ContentBlock::ToolUse { id, name, input, signature } => {
             object.insert(
                 "type".to_string(),
                 JsonValue::String("tool_use".to_string()),
@@ -1094,6 +1094,12 @@ fn persisted_block_json(block: &ContentBlock) -> JsonValue {
                 "input".to_string(),
                 JsonValue::String(sanitize_jsonl_field(input)),
             );
+            if let Some(signature) = signature {
+                object.insert(
+                    "signature".to_string(),
+                    JsonValue::String(sanitize_jsonl_field(signature)),
+                );
+            }
         }
         ContentBlock::ToolResult {
             tool_use_id,
@@ -1608,6 +1614,7 @@ mod tests {
                     id: "tool-1".to_string(),
                     name: "bash".to_string(),
                     input: format!("Authorization: Bearer {secret}"),
+                    signature: None,
                 },
             ]))
             .expect("tool use should append");
