@@ -5070,7 +5070,7 @@ async fn stream_with_provider(
 ) -> Result<Vec<AssistantEvent>, ApiError> {
     let mut stream = client.stream_message(message_request).await?;
     let mut events = Vec::new();
-    let mut pending_tools: BTreeMap<u32, (String, String, String)> = BTreeMap::new();
+    let mut pending_tools: BTreeMap<u32, (String, String, String, Option<String>)> = BTreeMap::new();
     let mut pending_thinking: BTreeMap<u32, (String, Option<String>)> = BTreeMap::new();
     let mut saw_stop = false;
 
@@ -5105,7 +5105,7 @@ async fn stream_with_provider(
                     }
                 }
                 ContentBlockDelta::InputJsonDelta { partial_json } => {
-                    if let Some((_, _, input)) = pending_tools.get_mut(&delta.index) {
+                    if let Some((_, _, input, _)) = pending_tools.get_mut(&delta.index) {
                         input.push_str(&partial_json);
                     }
                 }
@@ -5129,8 +5129,8 @@ async fn stream_with_provider(
                         signature,
                     });
                 }
-                if let Some((id, name, input)) = pending_tools.remove(&stop.index) {
-                    events.push(AssistantEvent::ToolUse { id, name, input });
+                if let Some((id, name, input, signature)) = pending_tools.remove(&stop.index) {
+                    events.push(AssistantEvent::ToolUse { id, name, input, signature });
                 }
             }
             ApiStreamEvent::MessageDelta(delta) => {
@@ -5232,11 +5232,12 @@ fn convert_messages(messages: &[ConversationMessage]) -> Vec<InputMessage> {
                         thinking: thinking.clone(),
                         signature: signature.clone(),
                     },
-                    ContentBlock::ToolUse { id, name, input } => InputContentBlock::ToolUse {
+                    ContentBlock::ToolUse { id, name, input, signature } => InputContentBlock::ToolUse {
                         id: id.clone(),
                         name: name.clone(),
                         input: serde_json::from_str(input)
                             .unwrap_or_else(|_| serde_json::json!({ "raw": input })),
+                        signature: signature.clone(),
                     },
                     ContentBlock::ToolResult {
                         tool_use_id,
@@ -5267,7 +5268,7 @@ fn push_output_block(
     block: OutputContentBlock,
     block_index: u32,
     events: &mut Vec<AssistantEvent>,
-    pending_tools: &mut BTreeMap<u32, (String, String, String)>,
+    pending_tools: &mut BTreeMap<u32, (String, String, String, Option<String>)>,
     pending_thinking: &mut BTreeMap<u32, (String, Option<String>)>,
     streaming_tool_input: bool,
 ) {
@@ -5277,7 +5278,7 @@ fn push_output_block(
                 events.push(AssistantEvent::TextDelta(text));
             }
         }
-        OutputContentBlock::ToolUse { id, name, input } => {
+        OutputContentBlock::ToolUse { id, name, input, signature } => {
             let initial_input = if streaming_tool_input
                 && input.is_object()
                 && input.as_object().is_some_and(serde_json::Map::is_empty)
@@ -5286,7 +5287,7 @@ fn push_output_block(
             } else {
                 input.to_string()
             };
-            pending_tools.insert(block_index, (id, name, initial_input));
+            pending_tools.insert(block_index, (id, name, initial_input, signature));
         }
         OutputContentBlock::Thinking {
             thinking,
@@ -5320,8 +5321,8 @@ fn response_to_events(response: MessageResponse) -> Vec<AssistantEvent> {
             &mut pending_thinking,
             false,
         );
-        if let Some((id, name, input)) = pending_tools.remove(&index) {
-            events.push(AssistantEvent::ToolUse { id, name, input });
+        if let Some((id, name, input, signature)) = pending_tools.remove(&index) {
+            events.push(AssistantEvent::ToolUse { id, name, input, signature });
         }
     }
 
@@ -7823,6 +7824,7 @@ mod tests {
                 id: "tool-1".to_string(),
                 name: "read_file".to_string(),
                 input: json!({}),
+                signature: None,
             },
             1,
             &mut events,
@@ -7835,6 +7837,7 @@ mod tests {
                 id: "tool-2".to_string(),
                 name: "grep_search".to_string(),
                 input: json!({}),
+                signature: None,
             },
             2,
             &mut events,
@@ -7860,6 +7863,7 @@ mod tests {
                 "tool-1".to_string(),
                 "read_file".to_string(),
                 "{\"path\":\"src/main.rs\"}".to_string(),
+                None,
             ))
         );
         assert_eq!(
@@ -7868,6 +7872,7 @@ mod tests {
                 "tool-2".to_string(),
                 "grep_search".to_string(),
                 "{\"pattern\":\"TODO\"}".to_string(),
+                None,
             ))
         );
     }
@@ -9115,6 +9120,7 @@ mod tests {
                             id: "tool-1".to_string(),
                             name: "read_file".to_string(),
                             input: json!({ "path": self.input_path }).to_string(),
+                            signature: None,
                         },
                         AssistantEvent::MessageStop,
                     ])

@@ -431,6 +431,7 @@ impl OpenAiSseParser {
     }
 
     fn push(&mut self, chunk: &[u8]) -> Result<Vec<ChatCompletionChunk>, ApiError> {
+
         self.buffer.extend_from_slice(chunk);
         let mut events = Vec::new();
 
@@ -686,6 +687,7 @@ struct ToolCallState {
     emitted_len: usize,
     started: bool,
     stopped: bool,
+    signature: Option<String>,
 }
 
 impl ToolCallState {
@@ -699,6 +701,15 @@ impl ToolCallState {
         }
         if let Some(arguments) = tool_call.function.arguments {
             self.arguments.push_str(&arguments);
+        }
+        if let Some(sig) = tool_call
+            .extra_content
+            .as_ref()
+            .and_then(|ec| ec.get("google"))
+            .and_then(|g| g.get("thought_signature"))
+            .and_then(|s| s.as_str())
+        {
+            self.signature = Some(sig.to_string());
         }
     }
 
@@ -721,6 +732,7 @@ impl ToolCallState {
                 id,
                 name,
                 input: json!({}),
+                signature: self.signature.clone(),
             },
         }))
     }
@@ -772,6 +784,8 @@ struct ChatMessage {
 struct ResponseToolCall {
     id: String,
     function: ResponseToolFunction,
+    #[serde(default)]
+    extra_content: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -858,6 +872,8 @@ struct DeltaToolCall {
     id: Option<String>,
     #[serde(default)]
     function: DeltaFunction,
+    #[serde(default)]
+    extra_content: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1161,14 +1177,24 @@ pub fn translate_message(message: &InputMessage, model: &str) -> Vec<Value> {
                     InputContentBlock::Thinking {
                         thinking: value, ..
                     } => reasoning.push_str(value),
-                    InputContentBlock::ToolUse { id, name, input } => tool_calls.push(json!({
-                        "id": id,
-                        "type": "function",
-                        "function": {
-                            "name": name,
-                            "arguments": input.to_string(),
+                    InputContentBlock::ToolUse { id, name, input, signature } => {
+                        let mut tc = json!({
+                            "id": id,
+                            "type": "function",
+                            "function": {
+                                "name": name,
+                                "arguments": input.to_string(),
+                            }
+                        });
+                        if let Some(sig) = signature {
+                            tc["extra_content"] = json!({
+                                "google": {
+                                    "thought_signature": sig
+                                }
+                            });
                         }
-                    })),
+                        tool_calls.push(tc);
+                    }
                     InputContentBlock::ToolResult { .. } => {}
                 }
             }
@@ -1384,6 +1410,15 @@ fn should_request_stream_usage(config: OpenAiCompatConfig) -> bool {
     matches!(config.provider_name, "OpenAI")
 }
 
+fn extract_thought_signature(extra_content: &Option<serde_json::Value>) -> Option<String> {
+    extra_content
+        .as_ref()
+        .and_then(|ec| ec.get("google"))
+        .and_then(|g| g.get("thought_signature"))
+        .and_then(|s| s.as_str())
+        .map(String::from)
+}
+
 fn normalize_response(
     model: &str,
     response: ChatCompletionResponse,
@@ -1414,6 +1449,7 @@ fn normalize_response(
             id: tool_call.id,
             name: tool_call.function.name,
             input: parse_tool_arguments(&tool_call.function.arguments),
+            signature: extract_thought_signature(&tool_call.extra_content),
         });
     }
 
@@ -2355,6 +2391,7 @@ mod tests {
                     id: "call_1".to_string(),
                     name: "read_file".to_string(),
                     input: serde_json::json!({"path": "/tmp/test"}),
+                    signature: None,
                 }],
             }],
             stream: false,
@@ -2573,6 +2610,7 @@ mod tests {
                         id: "call_1".to_string(),
                         name: "read_file".to_string(),
                         input: serde_json::json!({"path": "/tmp/test"}),
+                        signature: None,
                     }],
                 },
                 InputMessage {
